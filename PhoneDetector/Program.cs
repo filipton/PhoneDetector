@@ -1,6 +1,8 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -12,19 +14,18 @@ namespace PhoneDetector
 {
 	class Program
 	{
-		public static int PingTimeout => 1000;
-		public static int PingInterval => 1000;
+		public static int CheckInterval => 10000;
 
-		public static int PingsTimedOutForVerifyPhoneIsntConnected = 60;
+		public static int AmountOfChecksWhenPhoneIsntConnected = 30;
 
-		static int pingnotSuccess = 0;
+		static int CheckNotSuccess = 0;
 
 
 		//curl -s -X POST -H "Content-Type: application/json" -d '{"parameters":{}}' http://192.168.1.1/sysbus/Devices:get | jq
 		static async Task Main(string[] args)
 		{
 			Console.WriteLine("==================================================================");
-			Console.WriteLine($"Estimated time to verify that device isnt connected: {PingInterval + ((PingTimeout + PingInterval) * PingsTimedOutForVerifyPhoneIsntConnected)}ms");
+			Console.WriteLine($"Estimated time to verify that device isnt connected: {CheckInterval + (CheckInterval * AmountOfChecksWhenPhoneIsntConnected)}ms");
 			Console.WriteLine("==================================================================");
 			Console.WriteLine();
 
@@ -35,35 +36,72 @@ namespace PhoneDetector
 
 				while (true)
 				{
-					Ping ping = new Ping();
-					PingReply pingReply = ping.Send(ipToCheck, PingTimeout);
-					if (args.Length == 1 && args[0] == "true") Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {pingReply.Status}");
+					JsonDevices jsonDevices = JsonConvert.DeserializeObject<JsonDevices>(await GetDevices());
+					Status device = jsonDevices.result.status.ToList().Find(x => x.IPAddress == ipToCheck);
 
-					if (pingReply.Status == IPStatus.Success)
+					if (device != null)
 					{
-						if (!DeviceState)
+						if (args.Length == 1 && args[0] == "true") Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {device.Active}");
+
+						if (device.Active)
 						{
-							Console.WriteLine($"[{DateTime.Now}] DEVICE TURNED ON!");
-							DeviceState = true;
-							//new WebClient().DownloadString("http://192.168.1.18:21377/stt/powiedz%20Telefon%20jest%20połączony!");
-							await $"bash con.sh".Bash();
+							if (!DeviceState)
+							{
+								Console.WriteLine($"[{DateTime.Now}] DEVICE TURNED ON!");
+								DeviceState = true;
+								try
+								{
+									await $"bash con.sh".Bash();
+								}
+								catch (Exception e)
+								{
+									Console.WriteLine($"[{DateTime.Now}] {e}!");
+								}
+							}
+							CheckNotSuccess = 0;
 						}
-						pingnotSuccess = 0;
-					}
-					else if (pingReply.Status != IPStatus.Success && DeviceState)
-					{
-						pingnotSuccess++;
-						if (pingnotSuccess == PingsTimedOutForVerifyPhoneIsntConnected)
+						else if (!device.Active && DeviceState)
 						{
-							Console.WriteLine($"[{DateTime.Now}] DEVICE TURNED OFF!");
-							pingnotSuccess = 0;
-							DeviceState = false;
-							//new WebClient().DownloadString("http://192.168.1.18:21377/stt/powiedz%20Telefon%20nie%20jest%20połączony!");
-							await $"bash uncon.sh".Bash();
+							CheckNotSuccess++;
+							if (CheckNotSuccess >= AmountOfChecksWhenPhoneIsntConnected)
+							{
+								Console.WriteLine($"[{DateTime.Now}] DEVICE TURNED OFF!");
+								CheckNotSuccess = 0;
+								DeviceState = false;
+								try
+								{
+									await $"bash uncon.sh".Bash();
+								}
+								catch (Exception e)
+								{
+									Console.WriteLine($"[{DateTime.Now}] {e}!");
+								}
+							}
+						}
+					}
+					else
+					{
+						if (DeviceState)
+						{
+							CheckNotSuccess++;
+							if (CheckNotSuccess >= AmountOfChecksWhenPhoneIsntConnected)
+							{
+								Console.WriteLine($"[{DateTime.Now}] DEVICE TURNED OFF!");
+								CheckNotSuccess = 0;
+								DeviceState = false;
+								try
+								{
+									await $"bash uncon.sh".Bash();
+								}
+								catch (Exception e)
+								{
+									Console.WriteLine($"[{DateTime.Now}] {e}!");
+								}
+							}
 						}
 					}
 
-					Thread.Sleep(PingInterval);
+					Thread.Sleep(CheckInterval);
 				}
 			}
 			else
